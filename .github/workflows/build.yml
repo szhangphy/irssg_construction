@@ -2,9 +2,9 @@ name: Build Linux Wheels (cibuildwheel + gfortran)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ test ]
   pull_request:
-    branches: [ main ]
+    branches: [ test ]
 
 jobs:
   linux-wheels:
@@ -38,7 +38,7 @@ jobs:
       fail-fast: false
       matrix:
         # Temporarily test only 3.8 and 3.9
-        python-version: ['3.8','3.9']
+        python-version: ['3.9','3.10']
     steps:
       - name: Checkout
         uses: actions/checkout@v4

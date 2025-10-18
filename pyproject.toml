@@ -19,16 +19,17 @@ dependencies = [
   "spglib>=1.15.0",
   "pymatgen>=2021.2.8",
   "phonopy>=2.7.0",
+  "pandas<=2.2",
 ]
 
 [project.scripts]
 irssg = "irssg_pkg.cli:main"
 
 [tool.cibuildwheel]
-# Build CPython 3.8–3.9 on Linux (temporarily test only these)
+# Build CPython 3.9–3.10 on Linux (temporarily test only these)
 build = [
-  "cp38-*",
   "cp39-*",
+  "cp310-*",
 ]
 skip = ["pp*", "*musllinux*"]
 
