@@ -420,12 +420,12 @@ def spin_axis(spin_rot_list,symbol):
                     axis.append(i[1])
                     break
 
-        if 's' in symbol_sf:
-            for i in element:
-                if i[2] < 0:
-                    if abs(180 - i[0]) < 1e-2:
-                        axis.append(i[1])
-                        break
+        # if 's' in symbol_sf:
+        #     for i in element:
+        #         if i[2] < 0:
+        #             if abs(180 - i[0]) < 1e-2:
+        #                 axis.append(i[1])
+        #                 break
                     
         if 's' in symbol_sf or 'v' in symbol_sf:
             for i in element:
@@ -434,7 +434,7 @@ def spin_axis(spin_rot_list,symbol):
                         axis.append(i[1])
                         break
         else:
-            axis.append(orthonormal_basis_from_vector(axis[0]))
+            axis.append(orthonormal_basis_from_vector(axis[0])[0])
         
     elif symbol_sf[0] == 'D':
         

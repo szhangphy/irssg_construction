@@ -10,11 +10,14 @@ from __future__ import annotations
 import argparse
 import math
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 
+@lru_cache(maxsize=None)
 def read_text(path: Path) -> str:
+    print(f"Reading file: {path}")
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
@@ -67,6 +70,97 @@ def parse_spinors(text: str) -> bool:
         return False
     val = m.group(1).strip().lower()
     return val in (".true.", "true", "t", ".t.")
+
+
+def first_existing(candidates: List[Path]) -> Path | None:
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def detect_ispin_from_win(base: Path) -> int:
+    # User-defined rule:
+    # if wannier90.up.win or wannier90.1.win exists -> ISPIN=2, else ISPIN=1.
+    if (base / "wannier90.up.win").exists() or (base / "wannier90.1.win").exists():
+        return 2
+    return 1
+
+
+def find_wannier_win(base: Path, ispin: int) -> Path:
+    if ispin == 2:
+        win = first_existing(
+            [
+                base / "wannier90.up.win",
+                base / "wannier90.1.win",
+                base / "wannier90.dn.win",
+                base / "wannier90.2.win",
+            ]
+        )
+    else:
+        win = base / "wannier90.win" if (base / "wannier90.win").exists() else None
+
+    if win is None:
+        raise SystemExit("Missing Wannier win file for inferred ISPIN mode.")
+    return win
+
+
+def find_matching_wout(base: Path, win: Path) -> Path:
+    prefix = win.name[: -len(".win")]
+    return first_existing(
+        [
+            base / f"{prefix}.wout",
+            base / "wannier90.wout",
+            base / "wannier90.up.wout",
+            base / "wannier90.dn.wout",
+            base / "wannier90.1.wout",
+            base / "wannier90.2.wout",
+        ]
+    ) or (base / f"{prefix}.wout")
+
+
+def find_matching_labelinfo(base: Path, win: Path) -> Path:
+    prefix = win.name[: -len(".win")]
+    return first_existing(
+        [
+            base / f"{prefix}_band.labelinfo.dat",
+            base / "wannier90_band.labelinfo.dat",
+            base / "wannier90.up_band.labelinfo.dat",
+            base / "wannier90.dn_band.labelinfo.dat",
+            base / "wannier90.1_band.labelinfo.dat",
+            base / "wannier90.2_band.labelinfo.dat",
+        ]
+    ) or (base / f"{prefix}_band.labelinfo.dat")
+
+
+def find_spinpol_hr_files(base: Path) -> Tuple[Path | None, Path | None]:
+    preferred_pairs = [
+        ("wannier90.up_hr.dat", "wannier90.dn_hr.dat"),
+        ("wannier90.1_hr.dat", "wannier90.2_hr.dat"),
+        ("sp.up_hr.dat", "sp.dn_hr.dat"),
+        ("sp.1_hr.dat", "sp.2_hr.dat"),
+    ]
+    for up_name, dn_name in preferred_pairs:
+        up = base / up_name
+        dn = base / dn_name
+        if up.exists() and dn.exists():
+            return up, dn
+
+    for up in sorted(base.glob("*.up_hr.dat")):
+        stem = up.name[: -len(".up_hr.dat")]
+        dn = base / f"{stem}.dn_hr.dat"
+        if dn.exists():
+            return up, dn
+    for h1 in sorted(base.glob("*.1_hr.dat")):
+        stem = h1.name[: -len(".1_hr.dat")]
+        h2 = base / f"{stem}.2_hr.dat"
+        if h2.exists():
+            return h1, h2
+    return None, None
+
+
+def find_nonspin_hr_file(base: Path) -> Path:
+    return first_existing([base / "wannier90_hr.dat", base / "sp_hr.dat"]) or (base / "wannier90_hr.dat")
 
 
 def parse_projections(text: str) -> List[Tuple[str, str]]:
@@ -140,7 +234,7 @@ def parse_labelinfo(path: Path) -> List[List[float]]:
     if not path.exists():
         return []
     nodes: List[List[float]] = []
-    for ln in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    for ln in read_text(path).splitlines():
         parts = ln.split()
         if len(parts) < 5:
             continue
@@ -156,7 +250,7 @@ def infer_kmesh_from_labelinfo(path: Path) -> int | None:
     if not path.exists():
         return None
     idxs = []
-    for ln in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    for ln in read_text(path).splitlines():
         parts = ln.split()
         if len(parts) < 2:
             continue
@@ -175,7 +269,7 @@ def infer_kmesh_from_labelinfo(path: Path) -> int | None:
 def parse_kmesh_from_wout(path: Path) -> int | None:
     if not path.exists():
         return None
-    text = path.read_text(encoding="utf-8", errors="ignore")
+    text = read_text(path)
     m = re.search(r"Divisions along first K-path section\\s*:\\s*(\\d+)", text)
     if not m:
         return None
@@ -185,21 +279,139 @@ def parse_kmesh_from_wout(path: Path) -> int | None:
         return None
 
 
+def parse_last_final_state_rows(path: Path) -> List[Tuple[int, List[float], float]]:
+    if not path.exists():
+        return []
+    lines = read_text(path).splitlines()
+    starts = [i for i, ln in enumerate(lines) if "Final State" in ln]
+    if not starts:
+        return []
+    start = starts[-1]
+
+    pat = re.compile(
+        r"WF centre and spread\s+(\d+)\s+\(\s*([-+0-9.Ee]+)\s*,\s*([-+0-9.Ee]+)\s*,\s*([-+0-9.Ee]+)\s*\)\s*([-+0-9.Ee]+)"
+    )
+    rows: List[Tuple[int, List[float], float]] = []
+    for ln in lines[start + 1 :]:
+        if "Sum of centres and spreads" in ln:
+            break
+        m = pat.search(ln)
+        if not m:
+            continue
+        try:
+            rows.append(
+                (
+                    int(m.group(1)),
+                    [float(m.group(2)), float(m.group(3)), float(m.group(4))],
+                    float(m.group(5)),
+                )
+            )
+        except ValueError:
+            continue
+
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+def infer_spincov_from_final_state_rows(rows: List[Tuple[int, List[float], float]]) -> int | None:
+    if len(rows) < 2 or len(rows) % 2 != 0:
+        return None
+
+    vals = [(c[0], c[1], c[2], spr) for _, c, spr in rows]
+    n = len(vals)
+    half = n // 2
+
+    def pair_dist(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+        dx = a[0] - b[0]
+        dy = a[1] - b[1]
+        dz = a[2] - b[2]
+        ds = abs(a[3] - b[3])
+        return math.sqrt(dx * dx + dy * dy + dz * dz) + ds
+
+    block_score = sum(pair_dist(vals[i], vals[i + half]) for i in range(half)) / half
+    inter_score = sum(pair_dist(vals[2 * i], vals[2 * i + 1]) for i in range(half)) / half
+    # spincov=1: 1up..Nup,1dn..Ndn ; spincov=2: 1up,1dn,2up,2dn,...
+    return 1 if block_score <= inter_score else 2
+
+
+def infer_spincov_from_wout_final_state(path: Path) -> int | None:
+    return infer_spincov_from_final_state_rows(parse_last_final_state_rows(path))
+
+
+def select_atoms_nearest_to_final_state_centers(
+    atoms: List[Tuple[str, List[float]]],
+    cell: List[List[float]],
+    final_state_rows: List[Tuple[int, List[float], float]],
+) -> List[Tuple[str, List[float]]]:
+    if not atoms or not final_state_rows:
+        return atoms
+
+    cell_t = transpose(cell)
+    inv_cell_t = invert_3x3(cell_t)
+    atom_frac = [wrap_frac(matvec(inv_cell_t, cart)) for _, cart in atoms]
+
+    selected: List[int] = []
+    seen = set()
+    best_shift_by_atom: Dict[int, Tuple[float, List[int]]] = {}
+    for _, center_cart, _ in final_state_rows:
+        center_frac = matvec(inv_cell_t, center_cart)
+        best_i = -1
+        best_d2 = float("inf")
+        best_n = [0, 0, 0]
+        for i, af in enumerate(atom_frac):
+            raw = [center_frac[j] - af[j] for j in range(3)]
+            nimg = [int(round(x)) for x in raw]
+            dfrac = [raw[j] - nimg[j] for j in range(3)]
+            dcart = matvec(cell_t, dfrac)
+            d2 = dcart[0] * dcart[0] + dcart[1] * dcart[1] + dcart[2] * dcart[2]
+            if d2 < best_d2:
+                best_d2 = d2
+                best_i = i
+                best_n = nimg
+        if best_i >= 0 and best_i not in seen:
+            seen.add(best_i)
+            selected.append(best_i)
+        if best_i >= 0:
+            prev = best_shift_by_atom.get(best_i)
+            if prev is None or best_d2 < prev[0]:
+                best_shift_by_atom[best_i] = (best_d2, best_n)
+
+    if not selected:
+        return atoms
+
+    shifted_atoms: List[Tuple[str, List[float]]] = []
+    for i in selected:
+        sp, cart = atoms[i]
+        _, nimg = best_shift_by_atom.get(i, (0.0, [0, 0, 0]))
+        shift_cart = matvec(cell_t, [float(nimg[0]), float(nimg[1]), float(nimg[2])])
+        shifted_atoms.append((sp, [cart[0] + shift_cart[0], cart[1] + shift_cart[1], cart[2] + shift_cart[2]]))
+    return shifted_atoms
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate tbbox.in from Wannier90 files.")
     ap.add_argument("--orbt", type=int, default=2, help="orbt value (default: 2).")
-    ap.add_argument("--spincov", type=int, default=1, help="spincov value (default: 1).")
+    ap.add_argument(
+        "--spincov",
+        type=int,
+        choices=(1, 2),
+        default=None,
+        help="spincov override (default: auto from the last Final State block in wannier90.wout).",
+    )
     args = ap.parse_args()
 
     base = Path(".")
-    win = base / "wannier90.win"
-    if not win.exists():
-        raise SystemExit(f"Missing {win}")
+    ispin = detect_ispin_from_win(base)
+    win = find_wannier_win(base, ispin)
 
     text = read_text(win)
-    soc = False
+    soc = parse_spinors(text)
     cell = parse_unit_cell_cart(text)
     atoms = parse_atoms_cart(text)
+    wout = find_matching_wout(base, win)
+    final_state_rows = parse_last_final_state_rows(wout)
+    has_final_state = bool(final_state_rows)
+    atoms = select_atoms_nearest_to_final_state_centers(atoms, cell, final_state_rows)
     proj_list = parse_projections(text)
 
     # species order and norb mapping
@@ -224,11 +436,12 @@ def main() -> int:
     frac_atoms: List[Tuple[str, List[float]]] = []
     for sp, cart in atoms:
         frac = matvec(inv_cell_t, cart)
-        frac = wrap_frac(frac)
+        if not has_final_state:
+            frac = wrap_frac(frac)
         frac_atoms.append((sp, frac))
 
     # kpoint path nodes
-    labelinfo = base / "wannier90_band.labelinfo.dat"
+    labelinfo = find_matching_labelinfo(base, win)
     nodes = parse_labelinfo(labelinfo)
     if not nodes:
         nodes = parse_kpoint_path(text)
@@ -236,13 +449,23 @@ def main() -> int:
         # fallback: Gamma to X
         nodes = [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]
 
-    kmesh = parse_kmesh_from_wout(base / "wannier90.wout") or infer_kmesh_from_labelinfo(labelinfo) or 10
+    if args.spincov is not None:
+        spincov = args.spincov
+    else:
+        spincov = 1 if ispin == 2 else (infer_spincov_from_final_state_rows(final_state_rows) or 1)
+    kmesh = parse_kmesh_from_wout(wout) or infer_kmesh_from_labelinfo(labelinfo) or 10
 
-    # spinpol: check for up/dn HR files
-    hr_up = next((p for p in [base / "wannier90.up_hr.dat"] if p.exists()), None)
-    hr_dn = next((p for p in [base / "wannier90.dn_hr.dat"] if p.exists()), None)
-    spinpol = bool(hr_up and hr_dn)
-    hr_name = base / "wannier90_hr.dat"
+    # spinpol follows inferred ISPIN from win naming.
+    hr_up, hr_dn = find_spinpol_hr_files(base)
+    spinpol = ispin == 2
+    if spinpol and (hr_up is None or hr_dn is None):
+        if (base / "wannier90.1.win").exists():
+            hr_up = base / "wannier90.1_hr.dat"
+            hr_dn = base / "wannier90.2_hr.dat"
+        else:
+            hr_up = base / "wannier90.up_hr.dat"
+            hr_dn = base / "wannier90.dn_hr.dat"
+    hr_name = find_nonspin_hr_file(base)
 
     out = Path("tbbox.in")
     with out.open("w", encoding="utf-8") as f:
@@ -255,7 +478,7 @@ def main() -> int:
         f.write("\n")
         f.write(" proj:\n")
         f.write(f" orbt = {args.orbt}\n")
-        f.write(f" spincov = {args.spincov}\n")
+        f.write(f" spincov = {spincov}\n")
         f.write(f" ntau = {len(frac_atoms)}\n")
         for sp, frac in frac_atoms:
             t = type_index.get(sp, 1)
