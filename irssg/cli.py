@@ -1,6 +1,9 @@
 import os
 import sys
 import subprocess
+import shutil
+import tempfile
+from contextlib import contextmanager
 
 try:
     from importlib.resources import files
@@ -17,6 +20,10 @@ def _base_paths():
 
 def _has_ssg_data():
     return os.path.exists("ssg.data")
+
+
+def _has_msg_data():
+    return os.path.exists("msg.data")
 
 
 def _require_file(path: str, err: str) -> int:
@@ -63,6 +70,49 @@ def _debug(msg: str) -> None:
     if os.environ.get("IRSSG_DEBUG"):
         sys.stderr.write(f"[irssg-debug] {msg}\n")
 
+
+def _ensure_symmetry_data(ssg_args, prefer_msg: bool = False) -> int:
+    target = "msg.data" if prefer_msg else "ssg.data"
+    has_target = _has_msg_data() if prefer_msg else _has_ssg_data()
+    _debug(f"has_{target}={has_target}")
+    if has_target:
+        return 0
+    _debug(f"run ssg: {sys.executable} -m irssg.ssg.MOM2SSG {' '.join(ssg_args)}")
+    rc = _run_ssg(ssg_args)
+    _debug(f"ssg rc={rc}")
+    return rc
+
+
+@contextmanager
+def _activate_msg_mode(enabled: bool):
+    if not enabled:
+        yield
+        return
+
+    src = "msg.data"
+    dst = "ssg.data"
+    backup = None
+
+    if not _has_msg_data():
+        raise FileNotFoundError("msg.data")
+
+    if os.path.exists(dst):
+        fd, backup = tempfile.mkstemp(prefix="ssg.data.", suffix=".bak", dir=".")
+        os.close(fd)
+        shutil.copyfile(dst, backup)
+
+    shutil.copyfile(src, dst)
+    _debug("MSG mode active: copied msg.data to ssg.data for child run")
+    try:
+        yield
+    finally:
+        if backup is not None:
+            shutil.move(backup, dst)
+            _debug("Restored original ssg.data after MSG-mode run")
+        elif os.path.exists(dst):
+            os.remove(dst)
+            _debug("Removed temporary ssg.data after MSG-mode run")
+
 def main() -> int:
     # Resolve packaged data path and binary
     _, data_dir, bin_path = _base_paths()
@@ -78,6 +128,7 @@ def main() -> int:
     modes = {"ssg": [], "pw": [], "wann": []}
     present = {"ssg": False, "pw": False, "wann": False}
     current = None
+    force_msg = False
 
     # Known option specifications
     ssg_spec = {
@@ -99,6 +150,10 @@ def main() -> int:
     i = 0
     while i < len(argv):
         a = argv[i]
+        if a in ("-so", "--so"):
+            force_msg = True
+            i += 1
+            continue
         # Mode tags
         if a in ("-ssg", "--ssg"):
             present["ssg"] = True
@@ -156,24 +211,20 @@ def main() -> int:
 
     # No explicit mode flags: default to PW flow
     if not any(present.values()):
-        # Ensure ssg.data exists; if not, run SSG with any provided SSG opts (none by default)
-        _debug(f"has_ssg_data={_has_ssg_data()}")
-        if not _has_ssg_data():
-            _debug(f"run ssg: {sys.executable} -m irssg.ssg.MOM2SSG {' '.join(modes['ssg'])}")
-            rc = _run_ssg(modes["ssg"])  # may be empty
-            _debug(f"ssg rc={rc}")
-            if rc != 0:
-                return rc
+        rc = _ensure_symmetry_data(modes["ssg"], prefer_msg=force_msg)
+        if rc != 0:
+            return rc
         # Require WAVECAR and OUTCAR
         _debug(f"has_pw_inputs={_has_pw_inputs()}")
         if not _has_pw_inputs():
             sys.stderr.write("PW mode requires WAVECAR and OUTCAR in current directory.\n")
             return 1
-        _debug(f"run pw: {bin_path} {' '.join(modes['pw'])}")
-        rc = _run_pw(bin_path, modes["pw"])
-        _debug(f"pw rc={rc}")
-        if rc != 0:
-            return rc
+        with _activate_msg_mode(force_msg):
+            _debug(f"run pw: {bin_path} {' '.join(modes['pw'])}")
+            rc = _run_pw(bin_path, modes["pw"])
+            _debug(f"pw rc={rc}")
+            if rc != 0:
+                return rc
         return _run_deplicate([])
 
     # Only SSG
@@ -197,11 +248,12 @@ def main() -> int:
         if not _has_pw_inputs():
             sys.stderr.write("PW mode requires WAVECAR and OUTCAR in current directory.\n")
             return 1
-        _debug(f"run pw: {bin_path} {' '.join(modes['pw'])}")
-        rc = _run_pw(bin_path, modes["pw"])
-        _debug(f"pw rc={rc}")
-        if rc != 0:
-            return rc
+        with _activate_msg_mode(force_msg):
+            _debug(f"run pw: {bin_path} {' '.join(modes['pw'])}")
+            rc = _run_pw(bin_path, modes["pw"])
+            _debug(f"pw rc={rc}")
+            if rc != 0:
+                return rc
         return _run_deplicate([])
 
     # -ssg with -wann: run SSG first, then Wann
@@ -213,53 +265,46 @@ def main() -> int:
         # Require tbbox.in
         if _require_file("tbbox.in", "WANN mode requires tbbox.in in current directory.") != 0:
             return 1
-        _debug(f"run wann: {bin_path} --wann {' '.join(modes['wann'])}")
-        rc = _run_wann(bin_path, modes["wann"])
-        _debug(f"wann rc={rc}")
-        if rc != 0:
-            return rc
+        with _activate_msg_mode(force_msg):
+            _debug(f"run wann: {bin_path} --wann {' '.join(modes['wann'])}")
+            rc = _run_wann(bin_path, modes["wann"])
+            _debug(f"wann rc={rc}")
+            if rc != 0:
+                return rc
         return _run_deplicate([])
 
     # PW flow
     if present["pw"] and not present["wann"]:
-        # Ensure ssg.data exists (run SSG first if missing)
-        _debug(f"has_ssg_data={_has_ssg_data()}")
-        if not _has_ssg_data():
-            _debug(f"run ssg: {sys.executable} -m irssg.ssg.MOM2SSG {' '.join(modes['ssg'])}")
-            rc = _run_ssg(modes["ssg"])  # may be empty
-            _debug(f"ssg rc={rc}")
-            if rc != 0:
-                return rc
+        rc = _ensure_symmetry_data(modes["ssg"], prefer_msg=force_msg)
+        if rc != 0:
+            return rc
         # Require WAVECAR and OUTCAR
         _debug(f"has_pw_inputs={_has_pw_inputs()}")
         if not _has_pw_inputs():
             sys.stderr.write("PW mode requires WAVECAR and OUTCAR in current directory.\n")
             return 1
-        _debug(f"run pw: {bin_path} {' '.join(modes['pw'])}")
-        rc = _run_pw(bin_path, modes["pw"])
-        _debug(f"pw rc={rc}")
-        if rc != 0:
-            return rc
+        with _activate_msg_mode(force_msg):
+            _debug(f"run pw: {bin_path} {' '.join(modes['pw'])}")
+            rc = _run_pw(bin_path, modes["pw"])
+            _debug(f"pw rc={rc}")
+            if rc != 0:
+                return rc
         return _run_deplicate([])
 
     # WANN flow
     if present["wann"] and not present["pw"]:
-        # Ensure ssg.data exists (run SSG first if missing)
-        _debug(f"has_ssg_data={_has_ssg_data()}")
-        if not _has_ssg_data():
-            _debug(f"run ssg: {sys.executable} -m irssg.ssg.MOM2SSG {' '.join(modes['ssg'])}")
-            rc = _run_ssg(modes["ssg"])  # may be empty
-            _debug(f"ssg rc={rc}")
-            if rc != 0:
-                return rc
+        rc = _ensure_symmetry_data(modes["ssg"], prefer_msg=force_msg)
+        if rc != 0:
+            return rc
         # Require tbbox.in
         if _require_file("tbbox.in", "WANN mode requires tbbox.in in current directory.") != 0:
             return 1
-        _debug(f"run wann: {bin_path} --wann {' '.join(modes['wann'])}")
-        rc = _run_wann(bin_path, modes["wann"])
-        _debug(f"wann rc={rc}")
-        if rc != 0:
-            return rc
+        with _activate_msg_mode(force_msg):
+            _debug(f"run wann: {bin_path} --wann {' '.join(modes['wann'])}")
+            rc = _run_wann(bin_path, modes["wann"])
+            _debug(f"wann rc={rc}")
+            if rc != 0:
+                return rc
         return _run_deplicate([])
 
     # If both -pw and -wann are specified, this is ambiguous.
