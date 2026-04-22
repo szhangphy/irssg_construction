@@ -148,7 +148,7 @@ def _validate_pw_so_mode(force_msg: bool) -> int:
         return 1
     if nspin == 2 and not is_noncollinear:
         sys.stderr.write(
-            "ERROR: -so cannot be used with collinear ISPIN=2 calculations. Use SSG mode instead.\n"
+            "ERROR: -so cannot be used with collinear ISPIN=2 calculations.\n"
         )
         return 2
     return 0
