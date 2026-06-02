@@ -402,6 +402,15 @@ def spin_axis(spin_rot_list,symbol):
         element.append(get_rotation(spin_rot_list[i]))
         
     axis = []
+
+    if symbol_sf in ['Cs', 'C1v']:
+        for i in element:
+            if i[2] < 0 and abs(180 - i[0]) < 1e-2:
+                mirror_normal = np.asarray(i[1], dtype=float)
+                mirror_normal = mirror_normal / norm(mirror_normal)
+                principal_axis = orthonormal_basis_from_vector(mirror_normal)[0]
+                return [principal_axis, mirror_normal]
+        raise ValueError('Cannot find mirror normal for Cs/C1v spin point group')
     
     if symbol_sf[0] in ['C','S']:   
           
