@@ -8,7 +8,7 @@ build-backend = "mesonpy"
 
 [project]
 name = "irssg"
-version = "1.0.1"
+version = "1.0.4.1"
 description = "IRSSG is an open-source toolkit for identifying spin space groups and computing band irreducible (co)representations from DFT or Wannier tight-binding calculations."
 readme = "README.md"
 license = { file = "LICENSE" }
