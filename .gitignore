@@ -2,14 +2,24 @@
 /irssg
 !/irssg/
 
+# Local helper files and generated skill content
 /tools/
 /deplicate_rep.py
+/skills/
 
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Editors/OS
 .idea/
 .vscode/
 *~
+.DS_Store
 
 
 # Large data stored compressed in repo; ignore uncompressed originals

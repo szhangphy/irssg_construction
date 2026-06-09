@@ -509,7 +509,7 @@ def main():
         else:
             format_ssg = 'Cannot find SSG number and international symbol!!!'
         
-        msg_ops, ssg_in_msg = get_msg_operation(cell,ssg_ops,mag,magtolerance)
+        msg_ops, ssg_in_msg = get_msg_operation(cell,ssg_ops,mag,magtolerance,tol=max(tolerance,magtolerance))
         msg_idx = [i+1 for i, s in enumerate(ssg_in_msg) if s.strip() != ""]
         msg_info = get_msg_info_from_cell(
             cell,

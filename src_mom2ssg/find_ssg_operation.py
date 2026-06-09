@@ -110,10 +110,12 @@ def findQ(cell,tolm=1e-4): # find the largest possilbel PG of the quotient group
     #     elements.append(num2ele[num])
     mol = Molecule(elements, coord)
     # print(elements, coord)
+    moment_scale = max(np.linalg.norm(v) for v in coord)
+    eigen_tol = moment_scale * tolm
     try:
-        point_group = PointGroupAnalyzer(mol, tolerance=tolm, eigen_tolerance=0.0001, matrix_tolerance=0.00001)
+        point_group = PointGroupAnalyzer(mol, tolerance=tolm, eigen_tolerance=eigen_tol, matrix_tolerance=0.00001)
     except:
-        point_group = PointGroupAnalyzer(mol, tolerance=tolm, eigen_tolerance=0.0001)
+        point_group = PointGroupAnalyzer(mol, tolerance=tolm, eigen_tolerance=eigen_tol)
     # print('posible Q')
     # print(point_group.sch_symbol)
     op = point_group.get_symmetry_operations()
@@ -433,7 +435,7 @@ def findAllOp(cell, tol=1e-3,tolm=1e-4):
     out_spin = []
     out_rot = []
     out_tran = []
-    spinOp = findQ(cell,tolm=1e-4)  # find the spin-point group operations
+    spinOp = findQ(cell,tolm=tolm)  # find the spin-point group operations
     latticeOp = findG(cell, tol)
     non_mag_G = latticeOp[0]
     rot = latticeOp[1]
